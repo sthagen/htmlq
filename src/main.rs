@@ -9,6 +9,8 @@ mod pretty_print;
 
 use clap::{App, Arg, ArgMatches};
 use kuchiki::traits::*;
+use kuchiki::ElementData;
+use kuchiki::NodeDataRef;
 use kuchiki::NodeRef;
 use std::error::Error;
 use std::fs::File;
@@ -27,25 +29,26 @@ struct Config {
     text_only: bool,
     ignore_whitespace: bool,
     pretty_print: bool,
+    remove_nodes: Option<Vec<String>>,
     attributes: Option<Vec<String>>,
 }
 
 impl Config {
     fn from_args(matches: ArgMatches) -> Option<Config> {
-        let attributes: Option<Vec<String>> = match matches.values_of("attribute") {
-            Some(values) => Some(values.map(String::from).collect()),
-            None => None,
-        };
+        let attributes = matches
+            .values_of("attribute")
+            .map(|values| values.map(String::from).collect());
+
+        let remove_nodes = matches
+            .values_of("remove_nodes")
+            .map(|values| values.map(String::from).collect());
 
         let selector: String = match matches.values_of("selector") {
             Some(values) => values.collect::<Vec<&str>>().join(" "),
             None => String::from("html"),
         };
 
-        let base: Option<String> = match matches.value_of("base") {
-            Some(val) => Some(val.to_owned()),
-            _ => None,
-        };
+        let base = matches.value_of("base").map(|b| b.to_owned());
 
         Some(Config {
             input_path: String::from(matches.value_of("filename").unwrap_or("-")),
@@ -55,6 +58,7 @@ impl Config {
             text_only: matches.is_present("text_only"),
             ignore_whitespace: matches.is_present("ignore_whitespace"),
             pretty_print: matches.is_present("pretty_print"),
+            remove_nodes,
             attributes,
             selector,
         })
@@ -72,6 +76,7 @@ impl Default for Config {
             ignore_whitespace: true,
             pretty_print: true,
             text_only: false,
+            remove_nodes: None,
             attributes: Some(vec![]),
         }
     }
@@ -99,7 +104,7 @@ fn serialize_text(node: &NodeRef, ignore_whitespace: bool) -> String {
         result.push_str(&text_node.borrow());
 
         if ignore_whitespace {
-            result.push_str("\n");
+            result.push('\n');
         }
     }
 
@@ -108,7 +113,7 @@ fn serialize_text(node: &NodeRef, ignore_whitespace: bool) -> String {
 
 fn get_config<'a, 'b>() -> App<'a, 'b> {
     App::new("htmlq")
-        .version("0.3.0")
+        .version("0.4.0")
         .author("Michael Maclean <michael@mgdm.net>")
         .about("Runs CSS selectors on HTML")
         .arg(
@@ -166,6 +171,16 @@ fn get_config<'a, 'b>() -> App<'a, 'b> {
                 .help("Try to detect the base URL from the <base> tag in the document. If not found, default to the value of --base, if supplied"),
         )
         .arg(
+            Arg::with_name("remove_nodes")
+                .long("remove-nodes")
+                .short("r")
+                .multiple(true)
+                .number_of_values(1)
+                .takes_value(true)
+                .value_name("SELECTOR")
+                .help("Remove nodes matching this expression before output. May be specified multiple times")
+        )
+        .arg(
             Arg::with_name("selector")
                 .default_value("html")
                 .multiple(true)
@@ -211,6 +226,21 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     if let Some(base) = base {
         link::rewrite_relative_urls(&document, &base);
+    }
+
+    if config.remove_nodes.is_some() {
+        for selector in config.remove_nodes.unwrap() {
+            let node_refs: Vec<NodeDataRef<ElementData>> = document
+                .select(&selector)
+                .expect("Failed to parse CSS selector")
+                .collect();
+
+            // For some reason I can't just iterate over this directly
+            // I need to collect each node and then detach them separately
+            for node_ref in node_refs {
+                node_ref.as_node().detach();
+            }
+        }
     }
 
     for css_match in document
